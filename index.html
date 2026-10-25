@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Mocha Blend</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; background: #000; overflow: hidden; }
+  #site { position: fixed; inset: 0; width: 100%; height: 100%; border: 0; background: #000; }
+
+  /* Pause / play button, shown on every website except Food Mood Mix (which has its own) */
+  #ctl {
+    position: fixed;
+    left: calc(16px + env(safe-area-inset-left, 0px));
+    bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+    z-index: 10;
+    display: none;
+    align-items: center;
+    gap: 10px;
+    max-width: calc(100vw - 32px);
+    padding: 8px 16px 8px 8px;
+    color: #fff;
+    background: rgba(20, 20, 20, .62);
+    border: 1px solid rgba(255, 255, 255, .28);
+    border-radius: 999px;
+    backdrop-filter: blur(14px) saturate(140%);
+    -webkit-backdrop-filter: blur(14px) saturate(140%);
+    box-shadow: 0 6px 24px rgba(0, 0, 0, .35);
+    font: 500 14px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    cursor: pointer;
+  }
+  #ctl.show { display: flex; }
+  #ctl .ic {
+    flex: none;
+    width: 38px; height: 38px;
+    display: grid; place-items: center;
+    border-radius: 50%;
+    background: #fff; color: #000;
+  }
+  #ctl svg { width: 18px; height: 18px; fill: currentColor; }
+  #ctl .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+</style>
+</head>
+<body>
+<iframe id="site" src="Mocha Blend Home.html" title="Website" allow="autoplay; fullscreen"></iframe>
+
+<button id="ctl" type="button" aria-label="Pause">
+  <span class="ic" id="ic"></span>
+  <span class="name" id="name"></span>
+</button>
+
+<audio id="a" loop preload="auto"></audio>
+
+<script>
+/* The song lives HERE, outside the websites, so it never restarts or stops
+   when a website opens. Websites open inside the frame above. */
+const TRACKS = [
+  { file: "audio/espresso.m4a",               name: "Espresso" },
+  { file: "audio/in-the-night-no-control.m4a", name: "In the Night No Control" },
+  { file: "audio/night-changes.m4a",          name: "Night Changes" },
+  { file: "audio/ishq-de-fanniyar.m4a",       name: "Ishq de Fanniyar" },
+  { file: "audio/idgaf.m4a",                  name: "IDGAF" },
+  { file: "audio/ishq-wala-love.m4a",         name: "Ishq Wala Love" },
+  { file: "audio/front.mp3",                  name: "Front" }      // landing page song
+];
+const FRONT = 6;
+const ICON_PLAY  = '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>';
+const ICON_PAUSE = '<svg viewBox="0 0 24 24"><rect x="6" y="5" width="4" height="14"/><rect x="14" y="5" width="4" height="14"/></svg>';
+
+const frame = document.getElementById("site");
+const audio = document.getElementById("a");
+const ctl   = document.getElementById("ctl");
+const icEl  = document.getElementById("ic");
+const nameEl = document.getElementById("name");
+
+audio.loop = true;
+let current = -1;          // which song is loaded
+let wantPlaying = false;   // true until the user pauses with a button
+let userPaused = false;    // the user pressed pause on purpose
+let switching = false;
+let switchedAt = 0;
+
+function sendState() {
+  try { frame.contentWindow.postMessage({ type: "state", index: current, playing: wantPlaying }, "*"); } catch (e) {}
+}
+function paint() {
+  icEl.innerHTML = wantPlaying ? ICON_PAUSE : ICON_PLAY;
+  ctl.setAttribute("aria-label", wantPlaying ? "Pause" : "Play");
+  const blocked = current >= 0 && !wantPlaying && !userPaused;   // browser is waiting for a first tap
+  nameEl.textContent = blocked ? "Tap anywhere to play music" : (current >= 0 ? TRACKS[current].name : "");
+}
+function play() {
+  if (current < 0) return;
+  wantPlaying = true;
+  paint();
+  const p = audio.play();
+  if (p && p.catch) p.catch((err) => {
+    if (err && err.name === "AbortError") return;
+    wantPlaying = false;     // browser blocked autoplay: wait for a tap
+    paint(); sendState();
+  });
+}
+function pause() {
+  wantPlaying = false;
+  audio.pause();
+  paint();
+}
+function setTrack(i) {
+  if (i < 0 || i >= TRACKS.length || i === current) return;
+  switching = true;
+  switchedAt = Date.now();
+  current = i;
+  audio.src = TRACKS[i].file;
+  audio.loop = true;
+  switching = false;
+  paint();
+  if (wantPlaying) play();
+}
+
+/* Loop forever: if a clip ever ends, start it again (never stop on its own) */
+audio.addEventListener("ended", () => {
+  audio.currentTime = 0;
+  if (wantPlaying) audio.play().catch(() => {});
+});
+/* Keep button state honest if the system pauses/plays the audio (e.g. headphones, lock screen) */
+audio.addEventListener("pause", () => {
+  if (switching || audio.ended || Date.now() - switchedAt < 400) return;
+  if (wantPlaying) { wantPlaying = false; userPaused = true; paint(); sendState(); }
+});
+audio.addEventListener("play", () => {
+  if (!wantPlaying) { wantPlaying = true; paint(); sendState(); }
+});
+
+/* Pause / play button (on the other websites) */
+ctl.addEventListener("click", () => {
+  if (wantPlaying) { userPaused = true; pause(); } else { userPaused = false; play(); }
+  sendState();
+});
+
+/* Show the button only when Food Mood Mix itself is not on screen */
+let readySeq = 0, seqAtLastLoad = 0;
+function setCtlVisible(on) { ctl.classList.toggle("show", on); }
+frame.addEventListener("load", () => {
+  const foodMoodMixShown = readySeq !== seqAtLastLoad;
+  seqAtLastLoad = readySeq;
+  setCtlVisible(!foodMoodMixShown);
+});
+
+/* Messages from Food Mood Mix */
+window.addEventListener("message", (e) => {
+  if (e.source !== frame.contentWindow || !e.data) return;
+  const m = e.data;
+  switch (m.type) {
+    case "hello":
+      readySeq++;
+      setCtlVisible(false);
+      sendState();
+      break;
+    case "track": setTrack(m.index); break;
+    case "play":  userPaused = false; play(); break;
+    case "pause": userPaused = true; pause(); break;
+    case "home":  /* Mocha Blend landing page is on screen: Front plays */
+      setTrack(FRONT);
+      if (!userPaused) play();
+      break;
+    case "tap":   /* first tap on the landing page: browsers allow sound now */
+      if (current === FRONT && !wantPlaying && !userPaused) play();
+      break;
+    case "enter": /* "Pick my mood" -> Food Mood Mix, Espresso starts by itself */
+      userPaused = false;
+      setTrack(0);
+      play();
+      frame.src = "Food Mood Mix.html";
+      break;
+    case "open":
+      if (typeof m.page === "string") frame.src = encodeURI(m.page);
+      break;
+  }
+});
+paint();
+</script>
+</body>
+</html>
